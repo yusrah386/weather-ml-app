@@ -47,9 +47,15 @@ def home():
 
 			return render_template('result.html', prediction=prediction, latency=latency)
 
+		except KeyError as e:
+			error_msg = f"Error processing input: missing field {e}"
+			return render_template('form.html', error=error_msg), 400
+		except ValueError as e:
+			error_msg = f"Error processing input: invalid value ({e})"
+			return render_template('form.html', error=error_msg), 400
 		except Exception as e:
 			error_msg = f"Error processing input: {e}"
-			return render_template('form.html', error=error_msg)
+			return render_template('form.html', error=error_msg), 500
 	# GET method: show the input form
 	return render_template('form.html')
 
