@@ -1,0 +1,62 @@
+- name: Install Kubectl
+  hosts: localhost
+  connection: local
+  become: yes
+
+  tasks:
+    - name: Update APT Package Manager
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+        state: present
+
+    - name: Create Kubernetes keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+
+    - name: Download Kubernetes signing key
+      ansible.builtin.get_url:
+        url: http://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key
+        dest: /tmp/kubernetes-release.key
+        mode: '0644'
+
+    - name: Convert Kubernetes signing key
+      ansible.builtin.command:
+        cmd: gpg --dearmor --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes APT repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        content: |
+          deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /
+        mode: '0644'
+
+    - name: Update APT with Kubernetes repository
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install Kubectl
+      ansible.builtin.command:
+        cmd: snap install kubectl --classic
+        creates: /snap/bin/kubectl
+
+    - name: Verify Kubectl installation
+      ansible.builtin.command:
+        cmd: kubectl version --client
+      register: kubectl_version
+      changed_when: false
+
+    - name: Display Kubectl version
+      ansible.builtin.debug:
+        var: kubectl_version.stdout

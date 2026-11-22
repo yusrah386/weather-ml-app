@@ -1,0 +1,22 @@
+---
+- name: Deploy Weather Application to Kubernetes
+  hosts: localhost
+  connection: local
+
+  tasks:
+    - name: Deploy Weather Application
+      ansible.builtin.command:
+        cmd: kubectl apply -f /home/ubuntu/ansible/deployment.yaml
+
+    - name: Create Kubernetes Service
+      ansible.builtin.command:
+        cmd: kubectl apply -f /home/ubuntu/ansible/service.yaml
+
+    - name: Scale Weather Application to Four Replicas
+      ansible.builtin.command:
+        cmd: kubectl scale deployment weather-ml-app --replicas=4
+
+    - name: Verify Deployment Rollout
+      ansible.builtin.command:
+        cmd: kubectl rollout status deployment/weather-ml-app
+      changed_when: false
