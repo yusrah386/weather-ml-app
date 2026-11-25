@@ -1,0 +1,132 @@
+# =====================================================================
+# CI.yml  -  Continuous Integration (Task 4, steps a to f)
+# Put this file in your repo at:  .github/workflows/CI.yml
+#
+# The only secrets needed are DOCKERHUB_USERNAME and DOCKERHUB_TOKEN.
+# =====================================================================
+name: CI
+
+# (a) Detect changes to the GitHub repository
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:            # lets you also start it by hand from the Actions tab
+
+env:
+  IMAGE_NAME: weather-ml-app          # DockerHub repository: yusrah386/weather-ml-app
+  CONTAINER_PORT: 5000             # port Flask listens on (app.py) and EXPOSEd in the Dockerfile
+  MODEL_FILE: model/model.pkl      # the trained model that app.py loads
+
+jobs:
+  build-test-push:
+    name: Build, test and push image
+    runs-on: ubuntu-latest
+
+    steps:
+      # Get a copy of the repository code onto the runner
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # The image version (v1, v2, ...) lives in the VERSION file in the repo root.
+      # Changing that one file is how you release a new version.
+      - name: Read image version
+        id: version
+        run: |
+          TAG=$(tr -d '[:space:]' < VERSION)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Image version is $TAG"
+
+      # (b) Install Flask and the dependencies in requirements.txt
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"              # same Python version as the Dockerfile (python:3.9-slim)
+          cache: "pip"
+
+      - name: Install Flask and dependencies from requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip show flask
+
+      # The app and the tests both need the trained Random Forest model file.
+      # This fails early, with a clear message, if it was not committed.
+      - name: Check the ML model file is in the repository
+        if: env.MODEL_FILE != ''
+        run: |
+          ls -lh "$MODEL_FILE" || { echo "Model file $MODEL_FILE not found - commit it to the repo"; exit 1; }
+
+      # (c) Run the Task 2 unittest files from tests/, each in its own step,
+      #     in order: smoke (does it start?) -> unit -> integration
+      - name: Run smoke tests (tests/smoke_test.py)
+        run: python -m unittest -v tests/smoke_test.py
+
+      - name: Run unit tests (tests/unit_test.py)
+        run: python -m unittest -v tests/unit_test.py
+
+      - name: Run integration tests (tests/integration_test.py)
+        run: python -m unittest -v tests/integration_test.py
+
+      # (d) Build a Docker image from the Dockerfile
+      - name: Check Docker is set up on the runner
+        run: docker version
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }} \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest \
+            .
+          docker image ls
+
+      # (e) Build test: start a container from the image and run a command
+      #     inside it to prove it launched. No functional testing needed.
+      - name: Build test - launch container
+        run: |
+          docker run -d --name build-test \
+            -p ${{ env.CONTAINER_PORT }}:${{ env.CONTAINER_PORT }} \
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          sleep 10                  # give Flask time to load the model and start
+          docker ps -a
+
+      - name: Build test - run a command inside the container
+        run: |
+          # Fail if the container has already stopped (e.g. the app crashed on start-up)
+          STATUS=$(docker inspect -f '{{.State.Status}}' build-test)
+          echo "Container status: $STATUS"
+          if [ "$STATUS" != "running" ]; then
+            docker logs build-test
+            exit 1
+          fi
+          # Run commands inside the running container
+          docker exec build-test python --version
+          docker exec build-test python -c "import flask; print('Flask', flask.__version__, 'is installed in the container')"
+          docker exec build-test pip list
+          docker exec build-test ls -l
+          if [ -n "$MODEL_FILE" ]; then
+            docker exec build-test ls -l "$MODEL_FILE"   # model file was copied into the image
+          fi
+          echo "Container launched successfully"
+
+      - name: Build test - show container logs and clean up
+        if: always()               # always remove the test container, even if a step failed
+        run: |
+          docker logs build-test || true
+          docker rm -f build-test || true
+
+      # (f) Push the image to DockerHub
+      #     Only on a push to main, so pull requests never publish an image.
+      - name: Log in to DockerHub
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push image to DockerHub
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
