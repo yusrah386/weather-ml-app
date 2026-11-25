@@ -1,0 +1,104 @@
+# =====================================================================
+# CD.yml  -  Continuous Deployment (Task 4, step g)
+# Put this file in your repo at:  .github/workflows/CD.yml
+#
+# Runs on the SELF-HOSTED runner installed on the Production Server,
+# so it can talk to minikube there. It deploys with the YAML files in
+# k8s/deployment.yaml and k8s/service.yaml using a rolling update, so the app never goes offline.
+#
+# Uses the DOCKERHUB_USERNAME secret to build the image name.
+# =====================================================================
+name: CD
+
+# (g) Start automatically when the CI workflow finishes
+on:
+  workflow_run:
+    workflows: [ "CI" ]          # must match the `name:` at the top of CI.yml
+    types: [ completed ]
+    branches: [ "main" ]
+
+# Never run two deployments at the same time
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: weather-ml-app          # DockerHub repository name (same as in CI.yml)
+  DEPLOYMENT: weather-ml-app          # name in k8s/deployment.yaml
+  CONTAINER: weather-ml-app           # container name in k8s/deployment.yaml
+  SERVICE: weather-ml-app-service     # name in k8s/service.yaml
+  NODE_PORT: 30007                 # nodePort in k8s/service.yaml
+
+jobs:
+  deploy:
+    name: Deploy to Kubernetes (minikube)
+    # Only deploy builds that PASSED CI, and only real pushes to main (not pull requests)
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event != 'pull_request'
+    runs-on: self-hosted
+
+    steps:
+      # Check out exactly the commit that CI tested and pushed
+      - name: Check out the commit that passed CI
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Read image version
+        id: version
+        run: |
+          TAG=$(tr -d '[:space:]' < VERSION)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploying version $TAG"
+
+      - name: Check minikube and kubectl are ready
+        run: |
+          minikube status
+          kubectl version --client
+          kubectl get nodes
+
+      # Put the new image name and version into k8s/deployment.yaml
+      - name: Set image version in k8s/deployment.yaml
+        run: |
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}"
+          sed -i "s|image: .*|image: ${IMAGE}|" k8s/deployment.yaml
+          grep "image:" k8s/deployment.yaml
+
+      # Apply the YAML files. Applying the Deployment with a new image starts
+      # a RollingUpdate: new pods start first, and old pods are only removed
+      # once the new ones pass their readiness probe (maxUnavailable: 0).
+      - name: Apply Service
+        run: kubectl apply -f k8s/service.yaml
+
+      - name: Apply Deployment (rolling update)
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl annotate deployment/${{ env.DEPLOYMENT }} \
+            kubernetes.io/change-cause="Deploy ${{ steps.version.outputs.tag }} (commit ${{ github.event.workflow_run.head_sha }})" \
+            --overwrite
+
+      # Wait until every new pod is ready. If it does not finish in time,
+      # roll back to the previous version so the service keeps working.
+      - name: Wait for rollout to finish
+        run: |
+          if ! kubectl rollout status deployment/${{ env.DEPLOYMENT }} --timeout=300s; then
+            echo "Rollout failed - rolling back to the previous version"
+            kubectl rollout undo deployment/${{ env.DEPLOYMENT }}
+            kubectl rollout status deployment/${{ env.DEPLOYMENT }} --timeout=300s
+            exit 1
+          fi
+
+      - name: Show what is running
+        run: |
+          kubectl get deployment ${{ env.DEPLOYMENT }} -o wide
+          kubectl get pods -l app=${{ env.DEPLOYMENT }} -o wide
+          kubectl get service ${{ env.SERVICE }}
+          kubectl rollout history deployment/${{ env.DEPLOYMENT }}
+
+      - name: Smoke check the deployed app
+        run: |
+          curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-connrefused \
+            -o page.html "http://$(minikube ip):${{ env.NODE_PORT }}"
+          echo "App answered on http://$(minikube ip):${{ env.NODE_PORT }}"
+          head -n 30 page.html
