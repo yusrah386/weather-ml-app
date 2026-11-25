@@ -1,0 +1,18 @@
+# service.yaml
+# Gives the pods one stable address and opens it on every node at NODE_PORT,
+# so `curl $(minikube ip):30007` reaches the app.
+apiVersion: v1
+kind: Service
+metadata:
+  name: weather-app-service
+  labels:
+    app: weather-app
+spec:
+  type: NodePort
+  selector:
+    app: weather-app       # sends traffic to pods with this label (from deployment.yaml)
+  ports:
+    - protocol: TCP
+      port: 5000                  # port inside the cluster
+      targetPort: 5000            # Flask port in the container (containerPort)
+      nodePort: 30007             # fixed port 30000-32767 on the node: curl $(minikube ip):30007 (matches NODE_PORT in CD.yml)

@@ -1,0 +1,93 @@
+# setup-runner.yml
+# Installs and registers a GitHub Actions self-hosted runner on the Production
+# Server, so CD.yml (runs-on: self-hosted) can deploy to minikube.
+#
+# 1. On GitHub: repo -> Settings -> Actions -> Runners -> New self-hosted runner -> Linux.
+#    Copy the token from the "./config.sh --url ... --token XXXX" line (it expires after 1 hour).
+# 2. Run (do NOT save the token in any file):
+#    ansible-playbook -i inventory.ini setup-runner.yml \
+#      -e repo_url=https://github.com/<USERNAME>/<REPO> -e runner_token=<TOKEN>
+# 3. For the video, start the runner in its own terminal on the server:
+#    ssh -i ~/.ssh/labsuser.pem ubuntu@<PUBLIC_IP>
+#    cd ~/actions-runner && ./run.sh
+#    (or run this playbook with -e runner_as_service=true to keep it running in the background)
+
+- name: Install the GitHub Actions self-hosted runner
+  hosts: production
+  become: true
+  vars:
+    app_user: ubuntu
+    runner_dir: /home/ubuntu/actions-runner
+    runner_name: production-server
+    runner_as_service: false
+
+  tasks:
+    - name: Make sure repo_url and runner_token were given
+      ansible.builtin.assert:
+        that:
+          - repo_url is defined
+          - runner_token is defined
+        fail_msg: "Run with -e repo_url=https://github.com/<USERNAME>/<REPO> -e runner_token=<TOKEN>"
+
+    - name: Find the latest runner release
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/actions/runner/releases/latest
+        return_content: true
+      register: runner_release
+
+    - name: Work out the runner version
+      ansible.builtin.set_fact:
+        runner_version: "{{ runner_release.json.tag_name | regex_replace('^v', '') }}"
+
+    - name: Create the runner folder
+      ansible.builtin.file:
+        path: "{{ runner_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Download and unpack the runner
+      ansible.builtin.unarchive:
+        src: "https://github.com/actions/runner/releases/download/v{{ runner_version }}/actions-runner-linux-x64-{{ runner_version }}.tar.gz"
+        dest: "{{ runner_dir }}"
+        remote_src: true
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        creates: "{{ runner_dir }}/config.sh"
+
+    - name: Install the runner's system dependencies
+      ansible.builtin.command: ./bin/installdependencies.sh
+      args:
+        chdir: "{{ runner_dir }}"
+      changed_when: false
+
+    # Runs as ubuntu (the same user as minikube), so kubectl in CD.yml finds the cluster
+    - name: Register the runner with the GitHub repository
+      ansible.builtin.command: >
+        ./config.sh --unattended
+        --url {{ repo_url }}
+        --token {{ runner_token }}
+        --name {{ runner_name }}
+        --labels self-hosted,production
+        --replace
+      args:
+        chdir: "{{ runner_dir }}"
+        creates: "{{ runner_dir }}/.runner"
+      become_user: "{{ app_user }}"
+      no_log: true                 # keep the token out of the output
+
+    - name: Install and start the runner as a background service (optional)
+      ansible.builtin.shell: |
+        ./svc.sh install {{ app_user }}
+        ./svc.sh start
+      args:
+        chdir: "{{ runner_dir }}"
+        creates: "{{ runner_dir }}/.service"
+      when: runner_as_service | bool
+
+    - name: Next step
+      ansible.builtin.debug:
+        msg: >-
+          Runner registered. Check it shows as Idle in GitHub (Settings -> Actions -> Runners).
+          {{ 'It runs as a service.' if runner_as_service | bool else 'Start it with: cd ' ~ runner_dir ~ ' && ./run.sh' }}
