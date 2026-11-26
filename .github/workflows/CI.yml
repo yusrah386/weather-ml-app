@@ -42,7 +42,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.9"              # same Python version as the Dockerfile (python:3.9-slim)
+          python-version: "3.11"              # same Python version as the Dockerfile (python:3.9-slim)
           cache: "pip"
 
       - name: Install Flask and dependencies from requirements.txt
