@@ -1,0 +1,10 @@
+# FIX: flask was missing, but app.py needs it.
+# Versions are pinned so CI, the Docker image and production all match.
+# scikit-learn MUST be 1.6.1: model/model.pkl was saved with that version,
+# and a different version can fail to load it or give different results.
+# numpy 2.x is needed to load the model (it was saved with numpy 2).
+# All four versions support Python 3.9 (the Dockerfile's base image).
+flask==3.1.0
+numpy==2.0.2
+pandas==2.2.3
+scikit-learn==1.6.1
