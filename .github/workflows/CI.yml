@@ -22,7 +22,7 @@ env:
 jobs:
   build-test-push:
     name: Build, test and push image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       # Get a copy of the repository code onto the runner
